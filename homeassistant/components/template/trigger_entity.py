@@ -170,10 +170,15 @@ class TriggerEntity(CoordinatorEntity[TriggerUpdateCoordinator]):
                 )
 
             if CONF_ATTRIBUTES in self._config:
-                rendered[CONF_ATTRIBUTES] = template.render_complex(
+                render = template.render_complex(
                     self._config[CONF_ATTRIBUTES],
                     variables,
                 )
+                if not isinstance(render, dict):
+                    raise TemplateError(
+                        "Error rendering attributes template: Result is not a Dictionary"
+                    )
+                rendered[CONF_ATTRIBUTES] = render
 
             self._rendered = rendered
         except TemplateError as err:

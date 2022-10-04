@@ -336,6 +336,51 @@ async def test_attribute_templates(hass, start_ha, entity_id):
     assert state.attributes["test_attribute"] == "It Works."
 
 
+@pytest.mark.parametrize("count", [1])
+@pytest.mark.parametrize(
+    "config,domain,entity_id",
+    [
+        (
+            {
+                "binary_sensor": {
+                    "platform": "template",
+                    "sensors": {
+                        "test_template_sensor": {
+                            "value_template": "{{ states.sensor.xyz.state }}",
+                            "attribute_templates": "{{ 'test_attribute': 'It ' ~ states.sensor.test_state.state ~ '.' } }}",
+                        },
+                    },
+                },
+            },
+            binary_sensor.DOMAIN,
+            "binary_sensor.test_template_sensor",
+        ),
+        (
+            {
+                "template": {
+                    "binary_sensor": {
+                        "state": "{{ states.sensor.xyz.state }}",
+                        "attributes": "{{ 'test_attribute': 'It ' ~ states.sensor.test_state.state ~ '.' } }}",
+                    },
+                },
+            },
+            template.DOMAIN,
+            "binary_sensor.unnamed_device",
+        ),
+    ],
+)
+async def test_attributes_template(hass, start_ha, entity_id):
+    """Test attribute_templates template."""
+    state = hass.states.get(entity_id)
+    assert state.attributes.get("test_attribute") == "It ."
+    hass.states.async_set("sensor.test_state", "Works2")
+    await hass.async_block_till_done()
+    hass.states.async_set("sensor.test_state", "Works")
+    await hass.async_block_till_done()
+    state = hass.states.get(entity_id)
+    assert state.attributes["test_attribute"] == "It Works."
+
+
 @pytest.fixture
 async def setup_mock():
     """Do setup of sensor mock."""
