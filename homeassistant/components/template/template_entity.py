@@ -15,7 +15,9 @@ from homeassistant.const import (
     CONF_ICON,
     CONF_NAME,
     CONF_PATH,
+    CONF_STATE,
     CONF_VARIABLES,
+    STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
 from homeassistant.core import (
@@ -178,6 +180,7 @@ class TemplateEntity(AbstractTemplateEntity):
             ]
             | None
         ) = None
+        self._config = config
         self._run_variables: ScriptVariables | dict
         self._attribute_templates = config.get(CONF_ATTRIBUTES)
         self._availability_template = config.get(CONF_AVAILABILITY)
@@ -237,13 +240,6 @@ class TemplateEntity(AbstractTemplateEntity):
             return
 
         self._attr_available = result_as_boolean(result)
-
-    @callback
-    def _update_state(self, result: str | TemplateError) -> None:
-        if self._availability_template:
-            return
-
-        self._attr_available = not isinstance(result, TemplateError)
 
     @callback
     def _add_attribute_template(
@@ -413,6 +409,56 @@ class TemplateEntity(AbstractTemplateEntity):
         self.async_on_remove(result_info.async_remove)
         self._template_result_info = result_info
         result_info.async_refresh()
+
+    def setup_state_template(
+        self,
+        attribute: str,
+        on_render: Callable[[Any], Any] | None = None,
+        on_update: Callable[[Any], None] | None = None,
+        on_cancel: Callable[[Any], None] | None = None,
+    ) -> None:
+        """Setup the template that manages the entity state."""
+
+        @callback
+        def _update_state(result: Any) -> None:
+            if isinstance(result, TemplateError):
+                # Unavailable
+                self._attr_available = False
+                if on_cancel:
+                    on_cancel(None)
+                return
+
+            if result is None:
+                # Unknown, do not update state through on_update
+                setattr(self, attribute, None)
+                if on_cancel:
+                    on_cancel(None)
+                return
+
+            if isinstance(result, str):
+                if (result_str := result.lower()) == STATE_UNAVAILABLE:
+                    # Unavailable
+                    self._attr_available = False
+                    if on_cancel:
+                        on_cancel(None)
+                    return
+
+                if result_str == STATE_UNKNOWN:
+                    # Unknown, do not update state through on_update
+                    setattr(self, attribute, None)
+                    if on_cancel:
+                        on_cancel(None)
+                    return
+
+            state = on_render(result) if on_render else result
+            if on_update:
+                on_update(state)
+            else:
+                setattr(self, attribute, state)
+
+        template: Template | None
+        if template := self._config.get(CONF_STATE):
+            self.add_template_attribute(attribute, template, None, _update_state)
 
     @callback
     def _async_setup_templates(self) -> None:

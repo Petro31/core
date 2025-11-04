@@ -165,15 +165,18 @@ class StateNumberEntity(TemplateEntity, AbstractTemplateNumber):
 
         self.add_script(CONF_SET_VALUE, config[CONF_SET_VALUE], name, DOMAIN)
 
+    def _update_state(self, result: Any) -> None:
+        try:
+            self._attr_native_value = vol.Coerce(float)(result)
+        except vol.Invalid:
+            self._attr_native_value = None
+
     @callback
     def _async_setup_templates(self) -> None:
         """Set up templates."""
         if self._template is not None:
             self.add_template_attribute(
-                "_attr_native_value",
-                self._template,
-                vol.Coerce(float),
-                none_on_template_error=True,
+                "_attr_native_value", self._template, self._update_state
             )
         if self._step_template is not None:
             self.add_template_attribute(
@@ -214,8 +217,10 @@ class TriggerNumberEntity(TriggerEntity, AbstractTemplateNumber):
         TriggerEntity.__init__(self, hass, coordinator, config)
         AbstractTemplateNumber.__init__(self, config)
 
+        self.setup_state_template(
+            "_attr_native_value", on_render=vol.Any(vol.Coerce(float))
+        )
         for key in (
-            CONF_STATE,
             CONF_STEP,
             CONF_MIN,
             CONF_MAX,
@@ -231,17 +236,11 @@ class TriggerNumberEntity(TriggerEntity, AbstractTemplateNumber):
             DOMAIN,
         )
 
-    def _handle_coordinator_update(self):
-        """Handle updated data from the coordinator."""
-        self._process_data()
-
-        if not self.available:
-            self.async_write_ha_state()
-            return
-
+    @callback
+    def _process_rendered_data(self) -> bool:
+        """Proccess step, min, and max."""
         write_ha_state = False
         for key, attr in (
-            (CONF_STATE, "_attr_native_value"),
             (CONF_STEP, "_attr_native_step"),
             (CONF_MIN, "_attr_native_min_value"),
             (CONF_MAX, "_attr_native_max_value"),
@@ -250,10 +249,4 @@ class TriggerNumberEntity(TriggerEntity, AbstractTemplateNumber):
                 setattr(self, attr, vol.Any(vol.Coerce(float), None)(rendered))
                 write_ha_state = True
 
-        if len(self._rendered) > 0:
-            # In case any non optimistic template
-            write_ha_state = True
-
-        if write_ha_state:
-            self.async_set_context(self.coordinator.data["context"])
-            self.async_write_ha_state()
+        return write_ha_state

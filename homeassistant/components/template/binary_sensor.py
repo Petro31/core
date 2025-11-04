@@ -36,7 +36,6 @@ from homeassistant.const import (
     STATE_UNKNOWN,
 )
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
-from homeassistant.exceptions import TemplateError
 from homeassistant.helpers import config_validation as cv, template
 from homeassistant.helpers.entity_platform import (
     AddConfigEntryEntitiesCallback,
@@ -184,7 +183,6 @@ class StateBinarySensorEntity(TemplateEntity, BinarySensorEntity, RestoreEntity)
         TemplateEntity.__init__(self, hass, config, unique_id)
 
         self._attr_device_class = config.get(CONF_DEVICE_CLASS)
-        self._template: template.Template = config[CONF_STATE]
         self._delay_cancel = None
         self._delay_on = None
         self._delay_on_raw = config.get(CONF_DELAY_ON)
@@ -204,7 +202,12 @@ class StateBinarySensorEntity(TemplateEntity, BinarySensorEntity, RestoreEntity)
     @callback
     def _async_setup_templates(self) -> None:
         """Set up templates."""
-        self.add_template_attribute("_state", self._template, None, self._update_state)
+        self.setup_state_template(
+            "_state",
+            on_render=template.result_as_boolean,
+            on_update=self._update_state,
+            on_cancel=self._cancel_delays,
+        )
 
         if self._delay_on_raw is not None:
             try:
@@ -225,26 +228,20 @@ class StateBinarySensorEntity(TemplateEntity, BinarySensorEntity, RestoreEntity)
         super()._async_setup_templates()
 
     @callback
-    def _update_state(self, result):
-        super()._update_state(result)
-
+    def _cancel_delays(self, _) -> None:
         if self._delay_cancel:
             self._delay_cancel()
             self._delay_cancel = None
 
-        state: bool | None = None
-        if result is not None and not isinstance(result, TemplateError):
-            state = template.result_as_boolean(result)
+    @callback
+    def _update_state(self, state):
+        self._cancel_delays()
 
         if state == self._attr_is_on:
             return
 
         # state without delay
-        if (
-            state is None
-            or (state and not self._delay_on)
-            or (not state and not self._delay_off)
-        ):
+        if (state and not self._delay_on) or (not state and not self._delay_off):
             self._attr_is_on = state
             return
 
@@ -264,7 +261,6 @@ class TriggerBinarySensorEntity(TriggerEntity, BinarySensorEntity, RestoreEntity
 
     _entity_id_format = ENTITY_ID_FORMAT
     domain = BINARY_SENSOR_DOMAIN
-    extra_template_keys = (CONF_STATE,)
 
     def __init__(
         self,
@@ -275,7 +271,13 @@ class TriggerBinarySensorEntity(TriggerEntity, BinarySensorEntity, RestoreEntity
         """Initialize the entity."""
         super().__init__(hass, coordinator, config)
 
-        for key in (CONF_STATE, CONF_DELAY_ON, CONF_DELAY_OFF, CONF_AUTO_OFF):
+        self.setup_state_template(
+            "_attr_is_on",
+            template.result_as_boolean,
+            self._update_state,
+            self._cancel_delays,
+        )
+        for key in (CONF_DELAY_ON, CONF_DELAY_OFF, CONF_AUTO_OFF):
             if isinstance(config.get(key), template.Template):
                 self._to_render_simple.append(key)
                 self._parse_result.add(key)
@@ -313,26 +315,14 @@ class TriggerBinarySensorEntity(TriggerEntity, BinarySensorEntity, RestoreEntity
             if self._attr_is_on and auto_off_time is not None:
                 self._set_auto_off(auto_off_time)
 
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle update of the data."""
-        self._process_data()
-
-        raw = self._rendered.get(CONF_STATE)
-        state: bool | None = None
-        if raw is not None:
-            state = template.result_as_boolean(raw)
-
-        key = CONF_DELAY_ON if state else CONF_DELAY_OFF
-        delay = self._rendered.get(key) or self._config.get(key)
-
+    def _check_delay(self, result, delay: Any) -> bool:
         if (
             self._delay_cancel
             and delay
             and self._attr_is_on == self._last_delay_from
-            and state == self._last_delay_to
+            and result == self._last_delay_to
         ):
-            return
+            return True
 
         if self._delay_cancel:
             self._delay_cancel()
@@ -343,13 +333,29 @@ class TriggerBinarySensorEntity(TriggerEntity, BinarySensorEntity, RestoreEntity
             self._auto_off_cancel = None
             self._auto_off_time = None
 
-        if not self.available:
-            self.async_write_ha_state()
+        return False
+
+    @callback
+    def _cancel_delays(self, result: bool) -> None:
+        """Cancel the delays."""
+        key = CONF_DELAY_ON if result else CONF_DELAY_OFF
+        delay = self._rendered.get(key) or self._config.get(key)
+
+        self._check_delay(result, delay)
+
+    @callback
+    def _update_state(self, result: bool) -> None:
+        """Handle update of the state."""
+
+        key = CONF_DELAY_ON if result else CONF_DELAY_OFF
+        delay = self._rendered.get(key) or self._config.get(key)
+
+        if self._check_delay(result, delay):
             return
 
         # state without delay.
-        if self._attr_is_on == state or delay is None:
-            self._set_state(state)
+        if self._attr_is_on == result or delay is None:
+            self._set_state(result)
             return
 
         if not isinstance(delay, timedelta):
@@ -363,9 +369,9 @@ class TriggerBinarySensorEntity(TriggerEntity, BinarySensorEntity, RestoreEntity
 
         # state with delay. Cancelled if new trigger received
         self._last_delay_from = self._attr_is_on
-        self._last_delay_to = state
+        self._last_delay_to = result
         self._delay_cancel = async_call_later(
-            self.hass, delay.total_seconds(), partial(self._set_state, state)
+            self.hass, delay.total_seconds(), partial(self._set_state, result)
         )
 
     @callback

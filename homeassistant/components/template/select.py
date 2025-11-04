@@ -122,6 +122,9 @@ class AbstractTemplateSelect(AbstractTemplateEntity, SelectEntity):
         self._attr_options = []
         self._attr_current_option = None
 
+    def _handle_state(self, result: Any) -> None:
+        self._attr_current_option = cv.string(result)
+
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
         if self._attr_assumed_state:
@@ -161,11 +164,10 @@ class TemplateSelect(TemplateEntity, AbstractTemplateSelect):
     def _async_setup_templates(self) -> None:
         """Set up templates."""
         if self._template is not None:
-            self.add_template_attribute(
+            self.setup_state_template(
                 "_attr_current_option",
                 self._template,
-                validator=cv.string,
-                none_on_template_error=True,
+                self._handle_state,
             )
         self.add_template_attribute(
             "_attr_options",
@@ -194,6 +196,7 @@ class TriggerSelectEntity(TriggerEntity, AbstractTemplateSelect):
 
         if CONF_STATE in config:
             self._to_render_simple.append(CONF_STATE)
+        self.setup_state_template("_attr_current_option", on_update=self._handle_state)
 
         # Scripts can be an empty list, therefore we need to check for None
         if (select_option := config.get(CONF_SELECT_OPTION)) is not None:
@@ -204,26 +207,11 @@ class TriggerSelectEntity(TriggerEntity, AbstractTemplateSelect):
                 DOMAIN,
             )
 
-    def _handle_coordinator_update(self):
-        """Handle updated data from the coordinator."""
-        self._process_data()
-
-        if not self.available:
-            self.async_write_ha_state()
-            return
-
-        write_ha_state = False
+    @callback
+    def _process_rendered_data(self) -> bool:
+        """Process options."""
         if (options := self._rendered.get(ATTR_OPTIONS)) is not None:
             self._attr_options = vol.All(cv.ensure_list, [cv.string])(options)
-            write_ha_state = True
+            return True
 
-        if (state := self._rendered.get(CONF_STATE)) is not None:
-            self._attr_current_option = cv.string(state)
-            write_ha_state = True
-
-        if len(self._rendered) > 0:
-            # In case any non optimistic template
-            write_ha_state = True
-
-        if write_ha_state:
-            self.async_write_ha_state()
+        return False

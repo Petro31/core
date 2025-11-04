@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
 import logging
 from typing import Any
 
@@ -44,7 +43,6 @@ from homeassistant.const import (
     STATE_UNKNOWN,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import TemplateError
 from homeassistant.helpers import config_validation as cv, template
 from homeassistant.helpers.entity_platform import (
     AddConfigEntryEntitiesCallback,
@@ -238,8 +236,8 @@ class StateSensorEntity(TemplateEntity, SensorEntity):
     @callback
     def _async_setup_templates(self) -> None:
         """Set up templates."""
-        self.add_template_attribute(
-            "_attr_native_value", self._template, None, self._update_state
+        self.setup_state_template(
+            "_attr_native_value", self._template, self._update_state
         )
         if self._attr_last_reset_template is not None:
             self.add_template_attribute(
@@ -257,21 +255,16 @@ class StateSensorEntity(TemplateEntity, SensorEntity):
 
     @callback
     def _update_state(self, result):
-        super()._update_state(result)
-        if isinstance(result, TemplateError):
-            self._attr_native_value = None
-            return
-
-        if result is None or self.device_class not in (
+        if self.device_class in (
             SensorDeviceClass.DATE,
             SensorDeviceClass.TIMESTAMP,
         ):
-            self._attr_native_value = result
+            self._attr_native_value = async_parse_date_datetime(
+                result, self.entity_id, self.device_class
+            )
             return
 
-        self._attr_native_value = async_parse_date_datetime(
-            result, self.entity_id, self.device_class
-        )
+        self._attr_native_value = result
 
 
 class TriggerSensorEntity(TriggerEntity, RestoreSensor):
@@ -279,7 +272,6 @@ class TriggerSensorEntity(TriggerEntity, RestoreSensor):
 
     _entity_id_format = ENTITY_ID_FORMAT
     domain = SENSOR_DOMAIN
-    extra_template_keys = (CONF_STATE,)
 
     def __init__(
         self,
@@ -290,7 +282,7 @@ class TriggerSensorEntity(TriggerEntity, RestoreSensor):
         """Initialize."""
         super().__init__(hass, coordinator, config)
 
-        self._parse_result.add(CONF_STATE)
+        self.setup_state_template("_attr_native_value", on_update=self._update_state)
         if (last_reset_template := config.get(ATTR_LAST_RESET)) is not None:
             if last_reset_template.is_static:
                 self._static_rendered[ATTR_LAST_RESET] = last_reset_template.template
@@ -314,17 +306,24 @@ class TriggerSensorEntity(TriggerEntity, RestoreSensor):
             self._rendered[CONF_STATE] = extra_data.native_value
             self.restore_attributes(last_state)
 
-    @property
-    def native_value(self) -> str | datetime | date | None:
-        """Return state of the sensor."""
-        return self._rendered.get(CONF_STATE)
+    @callback
+    def _update_state(self, result) -> None:
+        """Update the state."""
+        if self.device_class in (
+            SensorDeviceClass.DATE,
+            SensorDeviceClass.TIMESTAMP,
+        ):
+            self._attr_native_value = async_parse_date_datetime(
+                result, self.entity_id, self.device_class
+            )
+            return
+
+        self._attr_native_value = result
 
     @callback
-    def _process_data(self) -> None:
-        """Process new data."""
-        super()._process_data()
+    def _process_rendered_data(self) -> bool:
+        """Process last reset."""
 
-        # Update last_reset
         if ATTR_LAST_RESET in self._rendered:
             parsed_timestamp = dt_util.parse_datetime(self._rendered[ATTR_LAST_RESET])
             if parsed_timestamp is None:
@@ -335,15 +334,6 @@ class TriggerSensorEntity(TriggerEntity, RestoreSensor):
                 )
             else:
                 self._attr_last_reset = parsed_timestamp
+            return True
 
-        if (
-            state := self._rendered.get(CONF_STATE)
-        ) is None or self.device_class not in (
-            SensorDeviceClass.DATE,
-            SensorDeviceClass.TIMESTAMP,
-        ):
-            return
-
-        self._rendered[CONF_STATE] = async_parse_date_datetime(
-            state, self.entity_id, self.device_class
-        )
+        return False

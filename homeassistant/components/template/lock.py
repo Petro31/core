@@ -339,24 +339,13 @@ class StateLockEntity(TemplateEntity, AbstractTemplateLock):
             self._attr_supported_features |= supported_feature
 
     @callback
-    def _update_state(self, result: str | TemplateError) -> None:
-        """Update the state from the template."""
-        super()._update_state(result)
-        if isinstance(result, TemplateError):
-            self._state = None
-            return
-
-        self._handle_state(result)
-
-    @callback
     def _async_setup_templates(self) -> None:
         """Set up templates."""
         if self._template is not None:
-            self.add_template_attribute(
+            self.setup_state_template(
                 "_state",
                 self._template,
-                None,
-                self._update_state,
+                self._handle_state,
             )
         if self._code_format_template:
             self.add_template_attribute(
@@ -385,9 +374,7 @@ class TriggerLockEntity(TriggerEntity, AbstractTemplateLock):
 
         self._attr_name = name = self._rendered.get(CONF_NAME, DEFAULT_NAME)
 
-        if CONF_STATE in config:
-            self._to_render_simple.append(CONF_STATE)
-
+        self.setup_state_template("_state", on_update=self._handle_state)
         if isinstance(config.get(CONF_CODE_FORMAT), template.Template):
             self._to_render_simple.append(CONF_CODE_FORMAT)
             self._parse_result.add(CONF_CODE_FORMAT)
@@ -399,28 +386,10 @@ class TriggerLockEntity(TriggerEntity, AbstractTemplateLock):
             self._attr_supported_features |= supported_feature
 
     @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle update of the data."""
-        self._process_data()
+    def _process_rendered_data(self) -> bool:
+        """Process code format."""
+        if (rendered := self._rendered.get(CONF_CODE_FORMAT)) is not None:
+            self._update_code_format(rendered)
+            return True
 
-        if not self.available:
-            self.async_write_ha_state()
-            return
-
-        write_ha_state = False
-        for key, updater in (
-            (CONF_STATE, self._handle_state),
-            (CONF_CODE_FORMAT, self._update_code_format),
-        ):
-            if (rendered := self._rendered.get(key)) is not None:
-                updater(rendered)
-                write_ha_state = True
-
-        if not self._attr_assumed_state:
-            write_ha_state = True
-        elif self._attr_assumed_state and len(self._rendered) > 0:
-            # In case any non optimistic template
-            write_ha_state = True
-
-        if write_ha_state:
-            self.async_write_ha_state()
+        return False

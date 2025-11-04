@@ -219,19 +219,12 @@ class TriggerEventEntity(TriggerEntity, AbstractTemplateEvent, RestoreEntity):
         AbstractTemplateEvent.__init__(self, config)
 
     @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle update of the data."""
-        self._process_data()
-
-        if not self.available:
-            self.async_write_ha_state()
-            return
-
+    def _process_rendered_data(self) -> bool:
+        """Process event type and event types."""
         for key, updater in (
             (CONF_EVENT_TYPES, self._update_event_types),
             (CONF_EVENT_TYPE, self._update_event_type),
         ):
             updater(self._rendered[key])
 
-        self.async_set_context(self.coordinator.data["context"])
-        self.async_write_ha_state()
+        return True

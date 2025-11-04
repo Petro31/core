@@ -28,12 +28,10 @@ from homeassistant.const import (
     CONF_STATE,
     CONF_UNIQUE_ID,
     CONF_VALUE_TEMPLATE,
-    STATE_ON,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import TemplateError
 from homeassistant.helpers import config_validation as cv, template
 from homeassistant.helpers.entity_platform import (
     AddConfigEntryEntitiesCallback,
@@ -275,17 +273,6 @@ class AbstractTemplateFan(AbstractTemplateEntity, FanEntity):
         """Return the oscillation state."""
         return self._direction
 
-    def _handle_state(self, result) -> None:
-        if isinstance(result, bool):
-            self._state = result
-            return
-
-        if isinstance(result, str):
-            self._state = result.lower() in ("true", STATE_ON)
-            return
-
-        self._state = False
-
     @callback
     def _update_percentage(self, percentage):
         # Validate percentage
@@ -493,21 +480,9 @@ class StateFanEntity(TemplateEntity, AbstractTemplateFan):
             self._attr_supported_features |= supported_feature
 
     @callback
-    def _update_state(self, result):
-        super()._update_state(result)
-        if isinstance(result, TemplateError):
-            self._state = None
-            return
-
-        self._handle_state(result)
-
-    @callback
     def _async_setup_templates(self) -> None:
         """Set up templates."""
-        if self._template:
-            self.add_template_attribute(
-                "_state", self._template, None, self._update_state
-            )
+        self.setup_state_template("_state", on_render=template.result_as_boolean)
 
         if self._preset_mode_template is not None:
             self.add_template_attribute(
@@ -567,8 +542,8 @@ class TriggerFanEntity(TriggerEntity, AbstractTemplateFan):
             self.add_script(action_id, action_config, name, DOMAIN)
             self._attr_supported_features |= supported_feature
 
+        self.setup_state_template("_state", on_render=template.result_as_boolean)
         for key in (
-            CONF_STATE,
             CONF_PRESET_MODE,
             CONF_PERCENTAGE,
             CONF_OSCILLATING,
@@ -579,17 +554,10 @@ class TriggerFanEntity(TriggerEntity, AbstractTemplateFan):
                 self._parse_result.add(key)
 
     @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle update of the data."""
-        self._process_data()
-
-        if not self.available:
-            self.async_write_ha_state()
-            return
-
+    def _process_rendered_data(self) -> bool:
+        """Process additional templates."""
         write_ha_state = False
         for key, updater in (
-            (CONF_STATE, self._handle_state),
             (CONF_PRESET_MODE, self._update_preset_mode),
             (CONF_PERCENTAGE, self._update_percentage),
             (CONF_OSCILLATING, self._update_oscillating),
@@ -599,9 +567,4 @@ class TriggerFanEntity(TriggerEntity, AbstractTemplateFan):
                 updater(rendered)
                 write_ha_state = True
 
-        if len(self._rendered) > 0:
-            # In case any non optimistic template
-            write_ha_state = True
-
-        if write_ha_state:
-            self.async_write_ha_state()
+        return write_ha_state

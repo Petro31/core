@@ -21,13 +21,11 @@ from homeassistant.const import (
     CONF_SWITCHES,
     CONF_UNIQUE_ID,
     CONF_VALUE_TEMPLATE,
-    STATE_OFF,
     STATE_ON,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import TemplateError
 from homeassistant.helpers import config_validation as cv, template
 from homeassistant.helpers.entity_platform import (
     AddConfigEntryEntitiesCallback,
@@ -52,8 +50,6 @@ from .schemas import (
 )
 from .template_entity import TemplateEntity
 from .trigger_entity import TriggerEntity
-
-_VALID_STATES = [STATE_ON, STATE_OFF, "true", "false"]
 
 LEGACY_FIELDS = {
     CONF_VALUE_TEMPLATE: CONF_STATE,
@@ -200,23 +196,6 @@ class StateSwitchEntity(TemplateEntity, AbstractTemplateSwitch):
         if (off_action := config.get(CONF_TURN_OFF)) is not None:
             self.add_script(CONF_TURN_OFF, off_action, name, DOMAIN)
 
-    @callback
-    def _update_state(self, result):
-        super()._update_state(result)
-        if isinstance(result, TemplateError):
-            self._attr_is_on = None
-            return
-
-        if isinstance(result, bool):
-            self._attr_is_on = result
-            return
-
-        if isinstance(result, str):
-            self._attr_is_on = result.lower() in ("true", STATE_ON)
-            return
-
-        self._attr_is_on = False
-
     async def async_added_to_hass(self) -> None:
         """Register callbacks."""
         if self._template is None:
@@ -229,11 +208,7 @@ class StateSwitchEntity(TemplateEntity, AbstractTemplateSwitch):
     @callback
     def _async_setup_templates(self) -> None:
         """Set up templates."""
-        if self._template is not None:
-            self.add_template_attribute(
-                "_attr_is_on", self._template, None, self._update_state
-            )
-
+        self.setup_state_template("_attr_is_on", on_render=template.result_as_boolean)
         super()._async_setup_templates()
 
 
@@ -252,15 +227,12 @@ class TriggerSwitchEntity(TriggerEntity, AbstractTemplateSwitch):
         TriggerEntity.__init__(self, hass, coordinator, config)
         AbstractTemplateSwitch.__init__(self, config)
 
+        self.setup_state_template("_attr_is_on", on_render=template.result_as_boolean)
         name = self._rendered.get(CONF_NAME, DEFAULT_NAME)
         if on_action := config.get(CONF_TURN_ON):
             self.add_script(CONF_TURN_ON, on_action, name, DOMAIN)
         if off_action := config.get(CONF_TURN_OFF):
             self.add_script(CONF_TURN_OFF, off_action, name, DOMAIN)
-
-        if CONF_STATE in config:
-            self._to_render_simple.append(CONF_STATE)
-            self._parse_result.add(CONF_STATE)
 
     async def async_added_to_hass(self) -> None:
         """Restore last state."""
@@ -274,25 +246,3 @@ class TriggerSwitchEntity(TriggerEntity, AbstractTemplateSwitch):
         ):
             self._attr_is_on = last_state.state == STATE_ON
             self.restore_attributes(last_state)
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle update of the data."""
-        self._process_data()
-
-        if not self.available:
-            self.async_write_ha_state()
-            return
-
-        write_ha_state = False
-        if (state := self._rendered.get(CONF_STATE)) is not None:
-            self._attr_is_on = template.result_as_boolean(state)
-            write_ha_state = True
-
-        elif len(self._rendered) > 0:
-            # In case name, icon, or friendly name have a template but
-            # states does not
-            write_ha_state = True
-
-        if write_ha_state:
-            self.async_write_ha_state()

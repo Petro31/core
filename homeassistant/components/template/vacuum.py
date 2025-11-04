@@ -412,8 +412,8 @@ class TemplateStateVacuumEntity(TemplateEntity, AbstractTemplateVacuum):
     def _async_setup_templates(self) -> None:
         """Set up templates."""
         if self._template is not None:
-            self.add_template_attribute(
-                "_attr_activity", self._template, None, self._update_state
+            self.setup_state_template(
+                "_attr_activity", self._template, self._handle_state
             )
         if self._fan_speed_template is not None:
             self.add_template_attribute(
@@ -431,18 +431,6 @@ class TemplateStateVacuumEntity(TemplateEntity, AbstractTemplateVacuum):
                 none_on_template_error=True,
             )
         super()._async_setup_templates()
-
-    @callback
-    def _update_state(self, result):
-        super()._update_state(result)
-        if isinstance(result, TemplateError):
-            # This is legacy behavior
-            self._attr_activity = None
-            if not self._availability_template:
-                self._attr_available = True
-            return
-
-        self._handle_state(result)
 
 
 class TriggerVacuumEntity(TriggerEntity, AbstractTemplateVacuum):

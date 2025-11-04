@@ -29,8 +29,7 @@ from homeassistant.const import (
     STATE_UNKNOWN,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import TemplateError
-from homeassistant.helpers import config_validation as cv, template
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import (
     AddConfigEntryEntitiesCallback,
     AddEntitiesCallback,
@@ -56,19 +55,7 @@ from .template_entity import TemplateEntity
 from .trigger_entity import TriggerEntity
 
 _LOGGER = logging.getLogger(__name__)
-_VALID_STATES = [
-    AlarmControlPanelState.ARMED_AWAY,
-    AlarmControlPanelState.ARMED_CUSTOM_BYPASS,
-    AlarmControlPanelState.ARMED_HOME,
-    AlarmControlPanelState.ARMED_NIGHT,
-    AlarmControlPanelState.ARMED_VACATION,
-    AlarmControlPanelState.ARMING,
-    AlarmControlPanelState.DISARMED,
-    AlarmControlPanelState.DISARMING,
-    AlarmControlPanelState.PENDING,
-    AlarmControlPanelState.TRIGGERED,
-    STATE_UNAVAILABLE,
-]
+_VALID_STATES = list(AlarmControlPanelState)
 
 CONF_ALARM_CONTROL_PANELS = "panels"
 CONF_ARM_AWAY_ACTION = "arm_away"
@@ -374,20 +361,9 @@ class StateAlarmControlPanelEntity(TemplateEntity, AbstractTemplateAlarmControlP
         await self._async_handle_restored_state()
 
     @callback
-    def _update_state(self, result):
-        if isinstance(result, TemplateError):
-            self._state = None
-            return
-
-        self._handle_state(result)
-
-    @callback
     def _async_setup_templates(self) -> None:
         """Set up templates."""
-        if self._template:
-            self.add_template_attribute(
-                "_state", self._template, None, self._update_state
-            )
+        self.setup_state_template("_state", on_update=self._handle_state)
         super()._async_setup_templates()
 
 
@@ -408,10 +384,7 @@ class TriggerAlarmControlPanelEntity(TriggerEntity, AbstractTemplateAlarmControl
 
         self._attr_name = name = self._rendered.get(CONF_NAME, DEFAULT_NAME)
 
-        if isinstance(config.get(CONF_STATE), template.Template):
-            self._to_render_simple.append(CONF_STATE)
-            self._parse_result.add(CONF_STATE)
-
+        self.setup_state_template("_state", on_update=self._handle_state)
         for action_id, action_config, supported_feature in self._iterate_scripts(
             config
         ):
@@ -422,17 +395,3 @@ class TriggerAlarmControlPanelEntity(TriggerEntity, AbstractTemplateAlarmControl
         """Restore last state."""
         await super().async_added_to_hass()
         await self._async_handle_restored_state()
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle update of the data."""
-        self._process_data()
-
-        if not self.available:
-            self.async_write_ha_state()
-            return
-
-        if (rendered := self._rendered.get(CONF_STATE)) is not None:
-            self._handle_state(rendered)
-            self.async_set_context(self.coordinator.data["context"])
-            self.async_write_ha_state()

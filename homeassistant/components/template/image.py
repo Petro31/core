@@ -163,9 +163,9 @@ class TriggerImageEntity(TriggerEntity, ImageEntity):
         return ImageEntity.entity_picture.fget(self)  # type: ignore[attr-defined]
 
     @callback
-    def _process_data(self) -> None:
-        """Process new data."""
-        super()._process_data()
+    def _process_rendered_data(self) -> bool:
+        """Process imague url."""
         self._attr_image_last_updated = dt_util.utcnow()
         self._cached_image = None
         self._attr_image_url = self._rendered.get(CONF_URL)
+        return True

@@ -42,7 +42,6 @@ from homeassistant.const import (
     STATE_ON,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import TemplateError
 from homeassistant.helpers import config_validation as cv, template
 from homeassistant.helpers.entity_platform import (
     AddConfigEntryEntitiesCallback,
@@ -973,9 +972,7 @@ class StateLightEntity(TemplateEntity, AbstractTemplateLight):
     def _async_setup_templates(self) -> None:
         """Set up templates."""
         if self._template:
-            self.add_template_attribute(
-                "_state", self._template, None, self._update_state
-            )
+            self.setup_state_template("_state", self._template, self._update_state)
         if self._level_template:
             self.add_template_attribute(
                 "_brightness",
@@ -1069,12 +1066,6 @@ class StateLightEntity(TemplateEntity, AbstractTemplateLight):
     @callback
     def _update_state(self, result):
         """Update the state from the template."""
-        if isinstance(result, TemplateError):
-            # This behavior is legacy
-            self._state = False
-            if not self._availability_template:
-                self._attr_available = True
-            return
 
         if isinstance(result, bool):
             self._state = result
@@ -1142,6 +1133,8 @@ class TriggerLightEntity(TriggerEntity, AbstractTemplateLight):
 
         self._optimistic_attrs: dict[str, str] = {}
         self._optimistic = True
+
+        self.setup_state_template("_state", on_render=template.result_as_boolean)
         for key in (
             CONF_STATE,
             CONF_LEVEL,
@@ -1184,14 +1177,8 @@ class TriggerLightEntity(TriggerEntity, AbstractTemplateLight):
             self._attr_supported_features |= LightEntityFeature.TRANSITION
 
     @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle update of the data."""
-        self._process_data()
-
-        if not self.available:
-            self.async_write_ha_state()
-            return
-
+    def _process_rendered_data(self) -> bool:
+        """Process additional templates."""
         write_ha_state = False
         for key, updater in (
             (CONF_LEVEL, self._update_brightness),
@@ -1209,21 +1196,7 @@ class TriggerLightEntity(TriggerEntity, AbstractTemplateLight):
                 updater(rendered)
                 write_ha_state = True
 
-        if (rendered := self._rendered.get(CONF_SUPPORTS_TRANSITION)) is not None:
-            self._update_supports_transition(rendered)
-            write_ha_state = True
-
-        if not self._optimistic:
-            raw = self._rendered.get(CONF_STATE)
-            self._state = template.result_as_boolean(raw)
-
-            write_ha_state = True
-        elif self._optimistic and len(self._rendered) > 0:
-            # In case any non optimistic template
-            write_ha_state = True
-
-        if write_ha_state:
-            self.async_write_ha_state()
+        return write_ha_state
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""

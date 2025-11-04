@@ -17,6 +17,7 @@ from homeassistant.components.cover import (
     PLATFORM_SCHEMA as COVER_PLATFORM_SCHEMA,
     CoverEntity,
     CoverEntityFeature,
+    CoverState,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
@@ -30,7 +31,6 @@ from homeassistant.const import (
     CONF_VALUE_TEMPLATE,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import TemplateError
 from homeassistant.helpers import config_validation as cv, template
 from homeassistant.helpers.entity_platform import (
     AddConfigEntryEntitiesCallback,
@@ -61,16 +61,6 @@ OPEN_STATE = "open"
 OPENING_STATE = "opening"
 CLOSED_STATE = "closed"
 CLOSING_STATE = "closing"
-
-_VALID_STATES = [
-    OPEN_STATE,
-    OPENING_STATE,
-    CLOSED_STATE,
-    CLOSING_STATE,
-    "true",
-    "false",
-    "none",
-]
 
 CONF_POSITION = "position"
 CONF_POSITION_TEMPLATE = "position_template"
@@ -213,6 +203,24 @@ def async_create_preview_cover(
     )
 
 
+def _result_as_cover_state(result: Any) -> CoverState | None:
+    """Validate state for cover."""
+    if isinstance(result, bool):
+        return result
+
+    if isinstance(result, str):
+        value = result.lower().strip()
+        try:
+            return CoverState(value)
+        except ValueError:
+            try:
+                return CoverState.OPEN if cv.boolean(value) else CoverState.CLOSED
+            except vol.Invalid:
+                return None
+
+    return None
+
+
 class AbstractTemplateCover(AbstractTemplateEntity, CoverEntity):
     """Representation of a template cover features."""
 
@@ -336,29 +344,30 @@ class AbstractTemplateCover(AbstractTemplateEntity, CoverEntity):
             self._tilt_value = state
 
     def _update_opening_and_closing(self, result: Any) -> None:
-        state = str(result).lower()
-
-        if state in _VALID_STATES:
+        if (state := _result_as_cover_state(result)) is not None:
             if not self._position_template:
-                if state in ("true", OPEN_STATE):
+                if state == OPEN_STATE:
                     self._position = 100
                 else:
                     self._position = 0
 
             self._is_opening = state == OPENING_STATE
             self._is_closing = state == CLOSING_STATE
-        else:
-            _LOGGER.error(
-                "Received invalid cover is_on state: %s for entity %s. Expected: %s",
-                state,
-                self.entity_id,
-                ", ".join(_VALID_STATES),
-            )
-            if not self._position_template:
-                self._position = None
+            return
 
-            self._is_opening = False
-            self._is_closing = False
+        if not self._position_template:
+            self._position = None
+
+        self._is_opening = False
+        self._is_closing = False
+
+        # Invalid result, produce error.
+        if result is not None and state is None:
+            _LOGGER.error(
+                "Received invalid cover state: %s for entity %s",
+                result,
+                self.entity_id,
+            )
 
     async def async_open_cover(self, **kwargs: Any) -> None:
         """Move the cover up."""
@@ -465,10 +474,9 @@ class StateCoverEntity(TemplateEntity, AbstractTemplateCover):
     @callback
     def _async_setup_templates(self) -> None:
         """Set up templates."""
-        if self._template:
-            self.add_template_attribute(
-                "_position", self._template, None, self._update_state
-            )
+        self.setup_state_template(
+            "_position", on_update=self._update_opening_and_closing
+        )
         if self._position_template:
             self.add_template_attribute(
                 "_position",
@@ -486,15 +494,6 @@ class StateCoverEntity(TemplateEntity, AbstractTemplateCover):
                 none_on_template_error=True,
             )
         super()._async_setup_templates()
-
-    @callback
-    def _update_state(self, result):
-        super()._update_state(result)
-        if isinstance(result, TemplateError):
-            self._position = None
-            return
-
-        self._update_opening_and_closing(result)
 
 
 class TriggerCoverEntity(TriggerEntity, AbstractTemplateCover):
@@ -521,23 +520,20 @@ class TriggerCoverEntity(TriggerEntity, AbstractTemplateCover):
             self.add_script(action_id, action_config, name, DOMAIN)
             self._attr_supported_features |= supported_feature
 
-        for key in (CONF_STATE, CONF_POSITION, CONF_TILT):
+        self.setup_state_template(
+            "_position",
+            on_update=self._update_opening_and_closing,
+        )
+        for key in (CONF_POSITION, CONF_TILT):
             if isinstance(config.get(key), template.Template):
                 self._to_render_simple.append(key)
                 self._parse_result.add(key)
 
     @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle update of the data."""
-        self._process_data()
-
-        if not self.available:
-            self.async_write_ha_state()
-            return
-
+    def _process_rendered_data(self) -> bool:
+        """Process position and tilt."""
         write_ha_state = False
         for key, updater in (
-            (CONF_STATE, self._update_opening_and_closing),
             (CONF_POSITION, self._update_position),
             (CONF_TILT, self._update_tilt),
         ):
@@ -545,11 +541,4 @@ class TriggerCoverEntity(TriggerEntity, AbstractTemplateCover):
                 updater(rendered)
                 write_ha_state = True
 
-        if not self._attr_assumed_state:
-            write_ha_state = True
-        elif self._attr_assumed_state and len(self._rendered) > 0:
-            # In case any non optimistic template
-            write_ha_state = True
-
-        if write_ha_state:
-            self.async_write_ha_state()
+        return write_ha_state
